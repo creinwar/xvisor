@@ -1,0 +1,20 @@
+# Create default shared memory
+shmem create default 0x1000000 21
+
+# Load Linux device tree from file
+vfs guest_fdt_load linux /images/riscv/virt64-guest.dtb 1 mem0,physical_size,physsize,0x10000000 net0,switch,string,br0 shmem0,shared_mem,string,default
+
+# Create linux guest
+guest create linux
+
+# Load linux images
+vfs guest_load_list linux /images/riscv/virt64/nor_flash.list
+
+# Load RTOS device tree from file
+vfs guest_fdt_load rtos /images/riscv/virt64-rtos-guest.dtb 1 mem0,physical_size,physsize,0x10000000 net0,switch,string,br0 shmem0,shared_mem,string,default
+
+# Create RTOS guest
+guest create rtos
+
+# Load RTOS images
+vfs guest_load_list rtos /images/riscv/virt64/nor_flash_rtos.list

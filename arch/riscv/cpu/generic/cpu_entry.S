@@ -471,7 +471,7 @@ _cpu_init:
 .endm
 
 	/* Exception handling */
-	.align 3
+	.align 6
 	.global _handle_exception
 _handle_exception:
 	SAVE_ALL
@@ -482,7 +482,7 @@ _handle_exception:
 
 	sret
 
-	.align 3
+	.align 6
 	.global _handle_hyp_exception
 _handle_hyp_exception:
 	SAVE_ALL

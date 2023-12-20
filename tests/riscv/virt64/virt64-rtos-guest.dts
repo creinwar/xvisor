@@ -1,0 +1,95 @@
+
+/dts-v1/;
+
+/ {
+	model = "virt64";
+	device_type = "guest";
+	sbi_version = <2>;
+
+	aliases {
+		mem0 = &MEM0;
+		shmem0 = &SHMEM0;
+	};
+
+	vcpu_template {
+		device_type = "vcpu";
+		compatible = "riscv,generic";
+		riscv,isa = "rv64imafdc";
+		start_pc = <0x00000000>;
+		poweroff;
+	};
+
+	aspace {
+		guest_irq_count = <1024>;
+
+		nor_flash0 {
+			manifest_type = "real";
+			address_type = "memory";
+			guest_physical_addr = <0x00000000>;
+			physical_size = <0x03000000>;
+			device_type = "alloced_rom";
+			align_order = <21>; /* Align alloced memory to 2MB */
+		};
+
+		plic {
+			manifest_type = "virtual";
+			address_type = "memory";
+			guest_physical_addr = <0x0c000000>;
+			physical_size = <0x4000000>;
+			device_type = "pic";
+			compatible = "sifive,plic0";
+			parent_irq = <10>;
+			num_irq = <31>;
+			max_priority = <7>;
+		};
+
+		uart0 {
+			manifest_type = "virtual";
+			address_type = "memory";
+			guest_physical_addr = <0x10000000>;
+			physical_size = <0x1000>;
+			device_type = "serial";
+			compatible = "ns16550a";
+			fifo_size = <1024>;
+			interrupts = <10>;
+		};
+
+		vminfo {
+			manifest_type = "virtual";
+			address_type = "memory";
+			device_type = "sys";
+			compatible = "vminfo-0.1";
+			guest_physical_addr = <0x10001000>;
+			physical_size = <0x1000>;
+			ram0_base = <0x60000000>;
+		};
+
+		rtc {
+			manifest_type = "virtual";
+			address_type = "memory";
+			device_type = "rtc";
+			compatible = "google,goldfish-rtc";
+			guest_physical_addr = <0x10003000>;
+			physical_size = <0x1000>;
+			interrupts = <11>;
+		};
+
+		SHMEM0: shmem {
+			manifest_type = "real";
+			address_type = "memory";
+			guest_physical_addr = <0x58000000>;
+			physical_size = <0x01000000>;
+			device_type = "shared_ram";
+			shared_mem = ""; /* Override this before guest creation */
+		};
+
+		MEM0: mem0 {
+			manifest_type = "real";
+			address_type = "memory";
+			guest_physical_addr = <0x60000000>;
+			physical_size = <0x00000000>; /* Override this before guest creation */
+			align_order = <21>; /* Align alloced memory to 2MB */
+			device_type = "alloced_ram";
+		};
+	};
+};
