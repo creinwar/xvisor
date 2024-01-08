@@ -712,6 +712,7 @@ static int region_add(struct vmm_guest *guest,
 	reg->node = rnode;
 	reg->aspace = aspace;
 	reg->flags = 0x0;
+	reg->lock_id = 0x0;
 
 	/* Determine manifest_type */
 	rc = vmm_devtree_read_string(reg->node,

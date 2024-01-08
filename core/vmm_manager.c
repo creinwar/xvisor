@@ -1112,6 +1112,7 @@ int vmm_manager_guest_shutdown_request(struct vmm_guest *guest)
 
 struct vmm_guest *vmm_manager_guest_create(struct vmm_devtree_node *gnode)
 {
+	u64 allowed_clrs = 0;
 	u32 val, vnum, gnum;
 	const char *str;
 	irq_flags_t flags;
@@ -1192,6 +1193,7 @@ struct vmm_guest *vmm_manager_guest_create(struct vmm_devtree_node *gnode)
 	INIT_LIST_HEAD(&guest->aspace.reg_memprobe_list);
 	guest->aspace.reg_memtree = RB_ROOT;
 	guest->arch_priv = NULL;
+	guest->allowed_colours_bitmask = (u64) -1LL;
 
 	/* Determine guest endianness from guest node */
 	if (vmm_devtree_read_string(gnode,
@@ -1202,6 +1204,18 @@ struct vmm_guest *vmm_manager_guest_create(struct vmm_devtree_node *gnode)
 			guest->is_big_endian = TRUE;
 		}
 	}
+
+	/* Set the allowed colours, if the feature is used */
+	/* Whether they are honored or not is dependent on the hardware support */
+	if(vmm_devtree_read_u64(gnode,
+			VMM_DEVTREE_ALLOWED_CLRS_ATTR_NAME, &allowed_clrs) == VMM_OK){
+		if(allowed_clrs)
+			guest->allowed_colours_bitmask = allowed_clrs;
+	}
+
+#ifdef CONFIG_TLB_COLOURING
+	vmm_printf("%s: set allowed colours to 0x%lx\r\n", __func__, guest->allowed_colours_bitmask);
+#endif
 
 	/* Release manager lock */
 	vmm_manager_unlock();

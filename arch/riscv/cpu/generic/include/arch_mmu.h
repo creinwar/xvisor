@@ -133,6 +133,54 @@ struct arch_pgflags {
 };
 typedef struct arch_pgflags arch_pgflags_t;
 
+enum arch_pte_entry_size {
+      INVALID = 0,
+     STD_PAGE,
+    MEGA_PAGE,
+    GIGA_PAGE
+};
+
+typedef struct {
+	enum arch_pte_entry_size size;
+	u8 virt_mode;
+	u8 instr;
+	u8 data;
+	u8 s_st_enbl;
+	u8 g_st_enbl;
+	u64 vpn;
+} arch_tlb_lock_vpn_t;
+
+typedef struct {
+	u16 vmid;
+	u16 asid;
+} arch_tlb_lock_id_t;
+
+static inline u64 arch_mmu_pack_tlb_lock_vpn(arch_tlb_lock_vpn_t vpn)
+{
+	u64 tmp = 0;
+
+	tmp |=  vpn.size        & 0x3;                      // Size
+	tmp |= (vpn.virt_mode   & 0x1)              << 2;   // Virt mode
+    tmp |= (vpn.instr       & 0x1)              << 3;   // ITLB locking
+    tmp |= (vpn.data        & 0x1)              << 4;   // DTLB locking
+    tmp |= (vpn.s_st_enbl   & 0x1)              << 5;   // S-stage translation enabled
+    tmp |= (vpn.g_st_enbl   & 0x1)              << 6;   // G-stage translation enabled
+    tmp |= (vpn.vpn & ((1ULL << 45) - 1ULL))    << 12;  // VPN
+
+	return tmp;
+}
+
+static inline u32 arch_mmu_pack_tlb_lock_id(arch_tlb_lock_id_t id)
+{
+	u32 tmp = 0;
+
+	tmp |= 1;							// valid
+	tmp |= (id.vmid & 0x3FFF) << 1;		// vmid
+	tmp |= (id.asid & 0xFFFF) << 15;	// asid
+
+	return tmp;
+}
+
 int arch_mmu_pgtbl_min_align_order(int stage);
 
 int arch_mmu_pgtbl_align_order(int stage, int level);

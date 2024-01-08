@@ -90,6 +90,7 @@ struct vmm_region {
 	u32 map_order;
 	u32 maps_count;
 	struct vmm_region_mapping *maps;
+	u64 lock_id;
 	void *devemu_priv;
 	void *priv;
 };
@@ -167,6 +168,7 @@ struct vmm_guest {
 
 	/* Guest address space */
 	struct vmm_guest_aspace aspace;
+	u64 allowed_colours_bitmask;
 
 	/* Architecture specific context */
 	void *arch_priv;

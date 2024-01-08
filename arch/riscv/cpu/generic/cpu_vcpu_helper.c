@@ -31,6 +31,7 @@
 #include <vmm_host_aspace.h>
 #include <arch_barrier.h>
 #include <arch_guest.h>
+#include <arch_mmu.h>
 #include <arch_vcpu.h>
 #include <vio/vmm_vserial.h>
 #include <generic_mmu.h>
@@ -57,6 +58,11 @@
 				 riscv_isa_extension_mask(m) | \
 				 riscv_isa_extension_mask(h) | \
 				 riscv_isa_extension_mask(SSTC))
+
+#ifdef CONFIG_TLB_LOCKING
+// Tracks whether a given lockable TLB entry is used (0) or not (1)
+static u64 tlb_lockings_free_bitmap = ((1 << CONFIG_TLB_NUM_LOCKED_ENTRIES) - 1);
+#endif
 
 static int guest_vserial_notification(struct vmm_notifier_block *nb,
 					unsigned long evt, void *data)
@@ -163,11 +169,308 @@ int arch_guest_deinit(struct vmm_guest *guest)
 
 int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 {
+#ifdef CONFIG_TLB_LOCKING
+	arch_tlb_lock_vpn_t lock_vpn = {0};
+	arch_tlb_lock_id_t lock_id = {0};
+	struct mmu_page pg;
+	char const *dt_attr = NULL;
+	arch_pte_t *lock_pte = NULL;
+	struct mmu_pgtbl *lock_pte_pgtbl = NULL;
+	u64 idx = 0;
+	int rc = 0, target = 0, size_enum = 0;
+	irq_flags_t f;
+
+	arch_cpu_irq_save(f);
+
+	// Check that at least one locking entry is configured and that
+	// we have space still
+	if(CONFIG_TLB_NUM_LOCKED_ENTRIES && tlb_lockings_free_bitmap){
+
+		rc = vmm_devtree_read_string(region->node, VMM_DEVTREE_TLB_LOCKING_ATTR_NAME, &dt_attr);
+		if (rc) {
+			goto tlb_lock_free_fail;
+		}
+
+		// Is this a DTLB only mapping?
+		if(!strcmp(dt_attr, VMM_DEVTREE_TLB_LOCKING_VAL_DATA)){
+			target = 1;
+		// Or an ITLB only mapping?
+		} else if(!strcmp(dt_attr, VMM_DEVTREE_TLB_LOCKING_VAL_INSTRUCTION)){
+			target = 2;
+		// Or both?
+		} else if(!strcmp(dt_attr, VMM_DEVTREE_TLB_LOCKING_VAL_BOTH)){
+			target = 3;
+		// Okay no idea what this is
+		} else {
+			vmm_printf("%s: Unknown TLB locking mode: %s\n", __func__, dt_attr);
+			goto tlb_lock_free_fail;
+		}
+
+		// To be able to create a TLB locking we need a few things to hold
+		// 1. The size of the region needs to be either 4k, 2M or 1G
+		// 2. The region may only consist of a single mapping (so that we don't produce
+		// 	  inconsistent page table state)
+
+		switch(region->phys_size){
+			case     0x1000:	size_enum = 1; break;	// 4k
+			case   0x200000: 	size_enum = 2; break;	// 2M
+			case 0x40000000:	size_enum = 3; break;	// 1G
+			default:			size_enum = 0; break;
+		}
+
+		if(!size_enum || region->maps_count > 1){
+			vmm_printf("%s: Lock-incompatible region (@0x%lx, 0x%lx)\n",
+				__func__, region->gphys_addr, region->phys_size);
+			goto tlb_lock_free_fail;
+		}
+
+		while(idx < 8*sizeof(u64) && !((tlb_lockings_free_bitmap >> idx) & 1)){
+			idx++;
+		}
+
+		if(idx >= 64){
+			vmm_printf("%s: Unable to find free TLB locking entry (bitmap = 0x%lx)\n",
+				__func__, tlb_lockings_free_bitmap);
+			goto tlb_lock_free_fail;
+		}
+
+		tlb_lockings_free_bitmap &= ~idx;
+
+		vmm_printf("%s: Mapping 0x%lx bytes, 0x%lx -> 0x%lx in locking entry %lu for %s %s\n",
+				__func__, region->phys_size, region->gphys_addr, region->maps[0].hphys_addr,
+				idx, (target & 1) ? "DTLB" : "", (target & 2) ? "and ITLB" : "");
+
+		// Zero the page description struct
+		memset(&pg, 0, sizeof(pg));
+
+		// Set-up the page description struct
+		pg.ia = region->gphys_addr;
+		pg.sz = region->phys_size;
+		pg.oa = region->maps[0].hphys_addr;
+
+		arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, region->flags);
+
+		// Try to map the page in Stage2
+		rc = mmu_map_page(riscv_guest_priv(guest)->pgtbl, &pg);
+		if (rc) {
+			vmm_printf("%s: Unable to map the page in the guest pagetable (rc = %d)!\n",
+				__func__, rc);
+			goto tlb_lock_free_fail;
+		}
+
+		lock_vpn.size = size_enum;
+		lock_vpn.virt_mode = 1;
+		lock_vpn.data = target & 1;
+		lock_vpn.instr = (target & 2) >> 1;
+		lock_vpn.s_st_enbl = 0;	// TODO! This works only for a bare-metal guest
+		lock_vpn.g_st_enbl = 1;
+		lock_vpn.vpn = region->gphys_addr >> 12;
+
+		lock_id.asid = 0;
+		lock_id.vmid = mmu_pgtbl_hw_tag(riscv_guest_priv(guest)->pgtbl);
+
+		rc = mmu_find_pte(riscv_guest_priv(guest)->pgtbl, region->gphys_addr, &lock_pte, &lock_pte_pgtbl);
+		if(rc){
+			vmm_printf("%s: Unable to find PTE for 0x%lx (rc = %d)\n",
+				__func__, region->gphys_addr, rc);
+			goto tlb_lock_free_fail;
+		}
+
+		u64 satp = 0, hgatp = 0;
+
+		asm volatile(
+			"csrrs %0, satp, x0\n		\
+			 csrrs %1, hgatp, x0\n"
+			 : "=r"(satp), "=r"(hgatp)
+			 ::
+		);
+
+		vmm_printf("%s: Current SATP = 0x%lx, current HGATP = 0x%lx\n%s: assembled lock vpn = 0x%lx, assembled lock id = 0x%x\n",
+					__func__, satp, hgatp, __func__, arch_mmu_pack_tlb_lock_vpn(lock_vpn), arch_mmu_pack_tlb_lock_id(lock_id));
+		vmm_printf("%s: PTE for locked page = 0x%lx\n", __func__, *lock_pte);
+
+		// set the registers for our locking
+
+		switch(idx){
+			case 0:
+				asm volatile(
+					"csrrw x0, 0x5C1, %0\n	\
+					 csrrw x0, 0x5C2, %1\n	\
+					 csrrw x0, 0x5C3, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 1:
+				asm volatile(
+					"csrrw x0, 0x5C4, %0\n	\
+					 csrrw x0, 0x5C5, %1\n	\
+					 csrrw x0, 0x5C6, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 2:
+				asm volatile(
+					"csrrw x0, 0x5C7, %0\n	\
+					 csrrw x0, 0x5C8, %1\n	\
+					 csrrw x0, 0x5C9, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 3:
+				asm volatile(
+					"csrrw x0, 0x5CA, %0\n	\
+					 csrrw x0, 0x5CB, %1\n	\
+					 csrrw x0, 0x5CC, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 4:
+				asm volatile(
+					"csrrw x0, 0x5CD, %0\n	\
+					 csrrw x0, 0x5CE, %1\n	\
+					 csrrw x0, 0x5CF, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 5:
+				asm volatile(
+					"csrrw x0, 0x5D0, %0\n	\
+					 csrrw x0, 0x5D1, %1\n	\
+					 csrrw x0, 0x5D2, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 6:
+				asm volatile(
+					"csrrw x0, 0x5D3, %0\n	\
+					 csrrw x0, 0x5D4, %1\n	\
+					 csrrw x0, 0x5D5, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			case 7:
+				asm volatile(
+					"csrrw x0, 0x5D6, %0\n	\
+					 csrrw x0, 0x5D7, %1\n	\
+					 csrrw x0, 0x5D8, %2\n"
+					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+					:
+				);
+				break;
+			default:
+				vmm_printf("%s: Index %lu not supported!\n", __func__, idx);
+				break;
+		}
+
+		// The saved lock_id is always the lock index + 1, so lock_id == 0 means no locking
+		region->lock_id = idx + 1;
+	}
+
+tlb_lock_free_fail:
+	arch_cpu_irq_restore(f);
+
+#endif
+
 	return VMM_OK;
 }
 
 int arch_guest_del_region(struct vmm_guest *guest, struct vmm_region *region)
 {
+#ifdef CONFIG_TLB_LOCKING
+	irq_flags_t f;
+
+	arch_cpu_irq_save(f);
+
+	// Does this region have a locking?
+	if(region->lock_id){
+		switch(region->lock_id - 1){
+			case 0:
+				asm volatile(
+					"csrrw x0, 0x5C1, x0\n	\
+					 csrrw x0, 0x5C2, x0\n	\
+					 csrrw x0, 0x5C3, x0\n"
+					 :::
+				);
+				break;
+			case 1:
+				asm volatile(
+					"csrrw x0, 0x5C4, x0\n	\
+					 csrrw x0, 0x5C5, x0\n	\
+					 csrrw x0, 0x5C6, x0\n"
+					 :::
+				);
+				break;
+			case 2:
+				asm volatile(
+					"csrrw x0, 0x5C7, x0\n	\
+					 csrrw x0, 0x5C8, x0\n	\
+					 csrrw x0, 0x5C9, x0\n"
+					 :::
+				);
+				break;
+			case 3:
+				asm volatile(
+					"csrrw x0, 0x5CA, x0\n	\
+					 csrrw x0, 0x5CB, x0\n	\
+					 csrrw x0, 0x5CC, x0\n"
+					 :::
+				);
+				break;
+			case 4:
+				asm volatile(
+					"csrrw x0, 0x5CD, x0\n	\
+					 csrrw x0, 0x5CE, x0\n	\
+					 csrrw x0, 0x5CF, x0\n"
+					 :::
+				);
+				break;
+			case 5:
+				asm volatile(
+					"csrrw x0, 0x5D0, x0\n	\
+					 csrrw x0, 0x5D1, x0\n	\
+					 csrrw x0, 0x5D2, x0\n"
+					 :::
+				);
+				break;
+			case 6:
+				asm volatile(
+					"csrrw x0, 0x5D3, x0\n	\
+					 csrrw x0, 0x5D4, x0\n	\
+					 csrrw x0, 0x5D5, x0\n"
+					 :::
+				);
+				break;
+			case 7:
+				asm volatile(
+					"csrrw x0, 0x5D6, x0\n	\
+					 csrrw x0, 0x5D7, x0\n	\
+					 csrrw x0, 0x5D8, x0\n"
+					 :::
+				);
+				break;
+			default:
+				vmm_printf("%s: Unsupported locking index: %lu\n", __func__, region->lock_id-1);
+				break;
+		}
+
+		// If the lock id is in the supported range, add it to the free bitmap again
+		if(region->lock_id <= 8){
+			tlb_lockings_free_bitmap |= (1 << (region->lock_id - 1));
+		}
+
+		region->lock_id = 0;
+	}
+
+	arch_cpu_irq_restore(f);
+#endif
+
 	return VMM_OK;
 }
 
@@ -445,7 +748,18 @@ void arch_vcpu_switch(struct vmm_vcpu *tvcpu,
 void arch_vcpu_post_switch(struct vmm_vcpu *vcpu,
 			   arch_regs_t *regs)
 {
-	/* For now nothing to do here. */
+	// If configured accordingly, and if the vcpu is associated with a guest
+	// set the corresponding allowed colours
+#ifdef CONFIG_TLB_COLOURING
+	// If this vcpu is from a guest => use the allowed colours
+	// otherwise reset to the default (use all of them)
+	if(vcpu->guest){
+		csr_write(CSR_CUR_CLRS, vcpu->guest->allowed_colours_bitmask);
+	} else {
+		csr_write(CSR_CUR_CLRS, -1LL);
+	}
+
+#endif
 }
 
 void cpu_vcpu_envcfg_update(struct vmm_vcpu *vcpu, bool nested_virt)

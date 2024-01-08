@@ -11,7 +11,7 @@ guest create linux
 vfs guest_load_list linux /images/riscv/virt64/nor_flash.list
 
 # Load RTOS device tree from file
-vfs guest_fdt_load rtos /images/riscv/virt64-rtos-guest.dtb 1 mem0,physical_size,physsize,0x10000000 net0,switch,string,br0 shmem0,shared_mem,string,default
+vfs guest_fdt_load rtos /images/riscv/virt64-rtos-guest.dtb 1 mem0,physical_size,physsize,0x200000 shmem0,shared_mem,string,default
 
 # Create RTOS guest
 guest create rtos

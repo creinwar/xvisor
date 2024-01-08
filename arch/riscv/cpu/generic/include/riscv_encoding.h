@@ -838,6 +838,12 @@
 #define CSR_MVIPH			0x319
 #define CSR_MIPH			0x354
 
+/* Custom resource partitioning CSRs */
+#define CSR_CUR_CLRS		0x5C0
+#define CSR_TLB_LOCK_PTE_0  0x5C1
+#define CSR_TLB_LOCK_VPN_0  0x5C2
+#define CSR_TLB_LOCK_ID_0   0x5C3
+
 /* ===== Trap/Exception Causes ===== */
 
 #define CAUSE_MISALIGNED_FETCH		0x0

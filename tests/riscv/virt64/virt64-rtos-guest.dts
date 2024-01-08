@@ -5,6 +5,7 @@
 	model = "virt64";
 	device_type = "guest";
 	sbi_version = <2>;
+    allowed_colours = <0xFF00>;
 
 	aliases {
 		mem0 = &MEM0;
@@ -90,6 +91,7 @@
 			physical_size = <0x00000000>; /* Override this before guest creation */
 			align_order = <21>; /* Align alloced memory to 2MB */
 			device_type = "alloced_ram";
+			tlb_locking = "both";
 		};
 	};
 };

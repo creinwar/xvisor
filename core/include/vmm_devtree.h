@@ -130,6 +130,11 @@
 #define VMM_DEVTREE_VCPU_POWEROFF_ATTR_NAME	"poweroff"
 #define VMM_DEVTREE_NO_CHILD_PROBE_ATTR_NAME	"no-child-probe"
 #define VMM_DEVTREE_THREADS_AFFINITY_ATTR_NAME	"threads_affinity"
+#define VMM_DEVTREE_ALLOWED_CLRS_ATTR_NAME		"allowed_colours"
+#define VMM_DEVTREE_TLB_LOCKING_ATTR_NAME		"tlb_locking"
+#define VMM_DEVTREE_TLB_LOCKING_VAL_DATA		"data"
+#define VMM_DEVTREE_TLB_LOCKING_VAL_INSTRUCTION	"instruction"
+#define VMM_DEVTREE_TLB_LOCKING_VAL_BOTH		"both"
 
 enum vmm_devtree_attrypes {
 	VMM_DEVTREE_ATTRTYPE_UINT32	= 0,

@@ -167,6 +167,9 @@ static int cpu_vcpu_stage2_map(struct vmm_vcpu *vcpu,
 #endif
 	}
 
+	vmm_printf("%s: Trying to map 0x%lx bytes, 0x%lx -> 0x%lx, flags = 0x%x\n",
+		__func__, pg.sz, pg.ia, pg.oa, pg_reg_flags);
+
 	arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, pg_reg_flags);
 
 	/* Try to map the page in Stage2 */
