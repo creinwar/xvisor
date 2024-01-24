@@ -279,7 +279,7 @@ static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 			next = __vmm_scheduler_next2(schedp, current, regs);
 			vmm_write_unlock_irqrestore_lite(&current->sched_lock,
 							 cf);
-			if (next != current) {
+			if (next && next != current) {
 				if (current->wq_lock) {
 					vmm_spin_unlock_lite(current->wq_lock);
 					arch_cpu_irq_save(cf);
@@ -299,6 +299,19 @@ static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 
 	if (next) {
 		arch_vcpu_post_switch(next, regs);
+	}
+
+	if ((next && next->id == 9) || (current && current->id == 9)){
+		// RTOS vcpu id hardcoded
+		// Sort of handshaking
+		// if the RTOS waits for a timeslice (bit 1 is set)
+		// signal, that we switch to it now (bit 0 gets set)
+		__asm volatile(
+			"csrrs t0, 0x5DB, x0\n		\
+			 srli t0, t0, 1\n			\
+			 csrrs x0, 0x5DB, t0\n"
+			:::
+		);
 	}
 }
 

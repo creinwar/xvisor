@@ -342,6 +342,13 @@ _cpu_init:
 	ret
 
 .macro SAVE_ALL
+#ifdef CONFIG_TLB_COLOURING
+	// Overwrite the current colour with the colour reserved
+	// for Xvisor
+	// This write saves the previsour colour to the last colour register
+	csrrwi x0, 0x5C0, CONFIG_TLB_XVISOR_COLOUR
+#endif
+
 	/* Swap TP and SSCRATCH */
 	csrrw	tp, CSR_SSCRATCH, tp
 
@@ -468,6 +475,12 @@ _cpu_init:
 
 	/* Restore SP */
 	REG_L	sp, RISCV_ARCH_REGS_OFFSET(sp)(sp)
+
+#ifdef CONFIG_TLB_COLOURING
+	// Move the value of the last colour register
+	// to the current colour register
+	csrrwi x0, 0x5C2, 1
+#endif
 .endm
 
 	/* Exception handling */

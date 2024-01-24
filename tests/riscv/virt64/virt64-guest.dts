@@ -5,7 +5,7 @@
 	model = "virt64";
 	device_type = "guest";
 	sbi_version = <2>;
-    allowed_colours = <0x00FF>;
+    allowed_colours = <0xFFFE>;
 
 	aliases {
 		mem0 = &MEM0;
