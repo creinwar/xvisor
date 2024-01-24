@@ -61,7 +61,7 @@
 
 #ifdef CONFIG_TLB_LOCKING
 // Tracks whether a given lockable TLB entry is used (0) or not (1)
-static u64 tlb_lockings_free_bitmap = ((1 << CONFIG_TLB_NUM_LOCKED_ENTRIES) - 1);
+static u64 tlb_lockings_free_bitmap = ((1 << CONFIG_TLB_NUM_LOCKED_ENTRIES) - 1) & ~((1UL << (CONFIG_TLB_XVISOR_COLOUR-1)));
 #endif
 
 static int guest_vserial_notification(struct vmm_notifier_block *nb,
@@ -294,72 +294,72 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 		switch(idx){
 			case 0:
 				asm volatile(
-					"csrrw x0, 0x5C1, %0\n	\
-					 csrrw x0, 0x5C2, %1\n	\
-					 csrrw x0, 0x5C3, %2\n"
+					"csrrw x0, 0x5C3, %0\n	\
+					 csrrw x0, 0x5C4, %1\n	\
+					 csrrw x0, 0x5C5, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 1:
 				asm volatile(
-					"csrrw x0, 0x5C4, %0\n	\
-					 csrrw x0, 0x5C5, %1\n	\
-					 csrrw x0, 0x5C6, %2\n"
+					"csrrw x0, 0x5C6, %0\n	\
+					 csrrw x0, 0x5C7, %1\n	\
+					 csrrw x0, 0x5C8, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 2:
 				asm volatile(
-					"csrrw x0, 0x5C7, %0\n	\
-					 csrrw x0, 0x5C8, %1\n	\
-					 csrrw x0, 0x5C9, %2\n"
+					"csrrw x0, 0x5C9, %0\n	\
+					 csrrw x0, 0x5CA, %1\n	\
+					 csrrw x0, 0x5CB, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 3:
 				asm volatile(
-					"csrrw x0, 0x5CA, %0\n	\
-					 csrrw x0, 0x5CB, %1\n	\
-					 csrrw x0, 0x5CC, %2\n"
+					"csrrw x0, 0x5CC, %0\n	\
+					 csrrw x0, 0x5CD, %1\n	\
+					 csrrw x0, 0x5CE, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 4:
 				asm volatile(
-					"csrrw x0, 0x5CD, %0\n	\
-					 csrrw x0, 0x5CE, %1\n	\
-					 csrrw x0, 0x5CF, %2\n"
+					"csrrw x0, 0x5CF, %0\n	\
+					 csrrw x0, 0x5D0, %1\n	\
+					 csrrw x0, 0x5D1, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 5:
 				asm volatile(
-					"csrrw x0, 0x5D0, %0\n	\
-					 csrrw x0, 0x5D1, %1\n	\
-					 csrrw x0, 0x5D2, %2\n"
+					"csrrw x0, 0x5D2, %0\n	\
+					 csrrw x0, 0x5D3, %1\n	\
+					 csrrw x0, 0x5D4, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 6:
 				asm volatile(
-					"csrrw x0, 0x5D3, %0\n	\
-					 csrrw x0, 0x5D4, %1\n	\
-					 csrrw x0, 0x5D5, %2\n"
+					"csrrw x0, 0x5D5, %0\n	\
+					 csrrw x0, 0x5D6, %1\n	\
+					 csrrw x0, 0x5D7, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
 				break;
 			case 7:
 				asm volatile(
-					"csrrw x0, 0x5D6, %0\n	\
-					 csrrw x0, 0x5D7, %1\n	\
-					 csrrw x0, 0x5D8, %2\n"
+					"csrrw x0, 0x5D8, %0\n	\
+					 csrrw x0, 0x5D9, %1\n	\
+					 csrrw x0, 0x5DA, %2\n"
 					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
 					:
 				);
@@ -393,65 +393,65 @@ int arch_guest_del_region(struct vmm_guest *guest, struct vmm_region *region)
 		switch(region->lock_id - 1){
 			case 0:
 				asm volatile(
-					"csrrw x0, 0x5C1, x0\n	\
-					 csrrw x0, 0x5C2, x0\n	\
-					 csrrw x0, 0x5C3, x0\n"
+					"csrrw x0, 0x5C3, x0\n	\
+					 csrrw x0, 0x5C4, x0\n	\
+					 csrrw x0, 0x5C5, x0\n"
 					 :::
 				);
 				break;
 			case 1:
 				asm volatile(
-					"csrrw x0, 0x5C4, x0\n	\
-					 csrrw x0, 0x5C5, x0\n	\
-					 csrrw x0, 0x5C6, x0\n"
+					"csrrw x0, 0x5C6, x0\n	\
+					 csrrw x0, 0x5C7, x0\n	\
+					 csrrw x0, 0x5C8, x0\n"
 					 :::
 				);
 				break;
 			case 2:
 				asm volatile(
-					"csrrw x0, 0x5C7, x0\n	\
-					 csrrw x0, 0x5C8, x0\n	\
-					 csrrw x0, 0x5C9, x0\n"
+					"csrrw x0, 0x5C9, x0\n	\
+					 csrrw x0, 0x5CA, x0\n	\
+					 csrrw x0, 0x5CB, x0\n"
 					 :::
 				);
 				break;
 			case 3:
 				asm volatile(
-					"csrrw x0, 0x5CA, x0\n	\
-					 csrrw x0, 0x5CB, x0\n	\
-					 csrrw x0, 0x5CC, x0\n"
+					"csrrw x0, 0x5CC, x0\n	\
+					 csrrw x0, 0x5CD, x0\n	\
+					 csrrw x0, 0x5CE, x0\n"
 					 :::
 				);
 				break;
 			case 4:
 				asm volatile(
-					"csrrw x0, 0x5CD, x0\n	\
-					 csrrw x0, 0x5CE, x0\n	\
-					 csrrw x0, 0x5CF, x0\n"
+					"csrrw x0, 0x5CF, x0\n	\
+					 csrrw x0, 0x5D0, x0\n	\
+					 csrrw x0, 0x5D1, x0\n"
 					 :::
 				);
 				break;
 			case 5:
 				asm volatile(
-					"csrrw x0, 0x5D0, x0\n	\
-					 csrrw x0, 0x5D1, x0\n	\
-					 csrrw x0, 0x5D2, x0\n"
+					"csrrw x0, 0x5D2, x0\n	\
+					 csrrw x0, 0x5D3, x0\n	\
+					 csrrw x0, 0x5D4, x0\n"
 					 :::
 				);
 				break;
 			case 6:
 				asm volatile(
-					"csrrw x0, 0x5D3, x0\n	\
-					 csrrw x0, 0x5D4, x0\n	\
-					 csrrw x0, 0x5D5, x0\n"
+					"csrrw x0, 0x5D5, x0\n	\
+					 csrrw x0, 0x5D6, x0\n	\
+					 csrrw x0, 0x5D7, x0\n"
 					 :::
 				);
 				break;
 			case 7:
 				asm volatile(
-					"csrrw x0, 0x5D6, x0\n	\
-					 csrrw x0, 0x5D7, x0\n	\
-					 csrrw x0, 0x5D8, x0\n"
+					"csrrw x0, 0x5D8, x0\n	\
+					 csrrw x0, 0x5D9, x0\n	\
+					 csrrw x0, 0x5DA, x0\n"
 					 :::
 				);
 				break;
@@ -752,11 +752,11 @@ void arch_vcpu_post_switch(struct vmm_vcpu *vcpu,
 	// set the corresponding allowed colours
 #ifdef CONFIG_TLB_COLOURING
 	// If this vcpu is from a guest => use the allowed colours
-	// otherwise reset to the default (use all of them)
+	// otherwise use the Xvisor colour
 	if(vcpu->guest){
-		csr_write(CSR_CUR_CLRS, vcpu->guest->allowed_colours_bitmask);
+		csr_write(CSR_LAST_CLRS, vcpu->guest->allowed_colours_bitmask);
 	} else {
-		csr_write(CSR_CUR_CLRS, -1LL);
+		csr_write(CSR_LAST_CLRS, CONFIG_TLB_XVISOR_COLOUR);
 	}
 
 #endif

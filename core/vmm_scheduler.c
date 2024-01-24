@@ -258,6 +258,10 @@ dequeue_again:
 	return (next != current) ? next : NULL;
 }
 
+
+u64 data_ptes[64];
+u64 data_flags[64];
+
 static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 				 arch_regs_t *regs)
 {
@@ -272,14 +276,43 @@ static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 
 	if (current) {
 		preempt_min = (current->wq_lock) ? 1 : 0;
+
 		if (current->preempt_count == preempt_min) {
 			irq_flags_t cf;
+
+			// Check whether we should print the saved TLB state
+			// and decrement the trigger
+			u64 trigger = 0;
+			__asm volatile(
+				"csrrs %0, 0x802, x0\n		\
+				 beq %0, x0, 12f\n			\
+				 addi t0, %0, -1\n			\
+				 csrrw x0, 0x802, t0\n		\
+				 12:\n"
+				: "=r"(trigger)
+				:: "t0"
+			);
+
+			// Print the saved TLB data
+			if(trigger){
+				vmm_printf("\nTLB state switching from VCPU: %s\n", current->name);
+
+				for(int i = 0; i < 64; i++){
+					vmm_printf("[%02d]: %s virt = 0x%016lx, phys = 0x%016lx, ASID = 0x%04x, VMID = 0x%04x, flags = 0x%02x\n",
+							i, (data_flags[i] & 1) ? "  VALID" : "INVALID",
+        		      		(long int) (((data_flags[i] << 30) >> 23) & ~(0xFFF)),
+        		      		(long int) (((data_ptes[i] << 10) >> 8) & ~(0xFFF)),
+							(int) (data_flags[i] >> 48) & 0xFFFF,
+							(int) ((data_flags[i] << 16) >> 50) & 0x3FFF,
+        		      		(int) data_flags[i] & 0x1F);
+				}
+			}
 
 			vmm_write_lock_irqsave_lite(&current->sched_lock, cf);
 			next = __vmm_scheduler_next2(schedp, current, regs);
 			vmm_write_unlock_irqrestore_lite(&current->sched_lock,
 							 cf);
-			if (next != current) {
+			if (next && next != current) {
 				if (current->wq_lock) {
 					vmm_spin_unlock_lite(current->wq_lock);
 					arch_cpu_irq_save(cf);
@@ -299,6 +332,19 @@ static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 
 	if (next) {
 		arch_vcpu_post_switch(next, regs);
+	}
+
+	if ((next && next->id == 9) || (current && current->id == 9)){
+		// RTOS vcpu id hardcoded
+		// Sort of handshaking
+		// if the RTOS waits for a timeslice (bit 1 is set)
+		// signal, that we switch to it now (bit 0 gets set)
+		__asm volatile(
+			"csrrs t0, 0x5DB, x0\n		\
+			 srli t0, t0, 1\n			\
+			 csrrs x0, 0x5DB, t0\n"
+			:::
+		);
 	}
 }
 

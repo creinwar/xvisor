@@ -50,6 +50,9 @@
 #define RISCV_HEADER_VERSION (RISCV_HEADER_VERSION_MAJOR << 16 | \
 			      RISCV_HEADER_VERSION_MINOR)
 
+.extern data_ptes
+.extern data_flags
+
 	/*
 	 * _start: Primary CPU startup code
 	 * _start_secondary: Secondary CPU startup code
@@ -342,6 +345,13 @@ _cpu_init:
 	ret
 
 .macro SAVE_ALL
+#ifdef CONFIG_TLB_COLOURING
+	// Overwrite the current colour with the colour reserved
+	// for Xvisor
+	// This write saves the previsour colour to the last colour register
+	csrrwi x0, 0x5C0, CONFIG_TLB_XVISOR_COLOUR
+#endif
+
 	/* Swap TP and SSCRATCH */
 	csrrw	tp, CSR_SSCRATCH, tp
 
@@ -399,6 +409,28 @@ _cpu_init:
 	REG_S	s0, RISCV_ARCH_REGS_OFFSET(sepc)(sp)
 	csrr	s1, CSR_SSTATUS
 	REG_S	s1, RISCV_ARCH_REGS_OFFSET(sstatus)(sp)
+
+	/* Dump TLB state */
+  	li t3, 63		// Range is 0 - (NUM_TLB_ENTRIES-1)
+  	la t4, data_ptes
+  	la t5, data_flags
+	slli t2, t3, 3	// offset of last element is 63*8 == 63 << 3
+	add t4, t4, t2
+	add t5, t5, t2
+69:
+  	csrrw x0, 0x801, t3
+	addi x0, x0, 0
+	addi x0, x0, 0
+  	csrrs t2, 0x803, x0
+  	sd t2, 0(t4)
+  	addi t4, t4, -8
+  	csrrs t2, 0x805, x0
+  	sd t2, 0(t5)
+  	addi t5, t5, -8
+  	beq t3, x0, 70f
+  	addi t3, t3, -1
+  	jal x0, 69b
+70:
 .endm
 
 .macro SAVE_HSTATUS
@@ -468,6 +500,12 @@ _cpu_init:
 
 	/* Restore SP */
 	REG_L	sp, RISCV_ARCH_REGS_OFFSET(sp)(sp)
+
+#ifdef CONFIG_TLB_COLOURING
+	// Move the value of the last colour register
+	// to the current colour register
+	csrrwi x0, 0x5C2, 1
+#endif
 .endm
 
 	/* Exception handling */
