@@ -61,7 +61,11 @@
 
 #ifdef CONFIG_TLB_LOCKING
 // Tracks whether a given lockable TLB entry is used (0) or not (1)
+#ifdef CONFIG_TLB_XVISOR_COLOUR
 static u64 tlb_lockings_free_bitmap = ((1 << CONFIG_TLB_NUM_LOCKED_ENTRIES) - 1) & ~((1UL << (CONFIG_TLB_XVISOR_COLOUR-1)));
+#else
+static u64 tlb_lockings_free_bitmap = (1 << CONFIG_TLB_NUM_LOCKED_ENTRIES) - 1;
+#endif
 #endif
 
 static int guest_vserial_notification(struct vmm_notifier_block *nb,
