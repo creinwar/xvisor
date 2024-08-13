@@ -190,7 +190,7 @@ int __init arch_devtree_ram_bank_setup(void)
 	}
 
 	/* Sort banks based on start address */
-	for (i = 0; i < (bank_nr - 1); i++) {
+	/*for (i = 0; i < (bank_nr - 1); i++) {
 		for (j = i + 1; j < bank_nr; j++) {
 			if (bank_data[(2 * i)] > bank_data[(2 * j)]) {
 				tmp = bank_data[(2 * i)];
@@ -202,7 +202,7 @@ int __init arch_devtree_ram_bank_setup(void)
 				bank_data[(2 * j) + 1] = tmp;
 			}
 		}
-	}
+	}*/
 
 	return VMM_OK;
 }

@@ -180,8 +180,10 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 	char const *dt_attr = NULL;
 	arch_pte_t *lock_pte = NULL;
 	struct mmu_pgtbl *lock_pte_pgtbl = NULL;
-	u64 idx = 0;
-	int rc = 0, target = 0, size_enum = 0;
+	u64 size_left = 0, num_1g = 0, num_2m = 0, num_4k = 0, num_needed_indices = 0, num_reserved_indices = 0;
+    u64 idx = 0, selected_indices = 0;
+    u64 cur_gphys_addr = 0, cur_hphys_addr = 0, cur_size = 0;
+	int rc = 0, target = 0, cur_size_enum = 0;
 	irq_flags_t f;
 
 	arch_cpu_irq_save(f);
@@ -210,171 +212,254 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 			goto tlb_lock_free_fail;
 		}
 
-		// To be able to create a TLB locking we need a few things to hold
-		// 1. The size of the region needs to be either 4k, 2M or 1G
-		// 2. The region may only consist of a single mapping (so that we don't produce
-		// 	  inconsistent page table state)
-
-		switch(region->phys_size){
-			case     0x1000:	size_enum = 1; break;	// 4k
-			case   0x200000: 	size_enum = 2; break;	// 2M
-			case 0x40000000:	size_enum = 3; break;	// 1G
-			default:			size_enum = 0; break;
-		}
-
-		if(!size_enum || region->maps_count > 1){
+		// To be able to create a TLB locking we need the region to only consist of
+        // a single mapping (so that we don't inconsistent page table state)
+		if(region->maps_count > 1){
 			vmm_printf("%s: Lock-incompatible region (@0x%lx, 0x%lx)\n",
 				__func__, region->gphys_addr, region->phys_size);
 			goto tlb_lock_free_fail;
 		}
 
-		while(idx < 8*sizeof(u64) && !((tlb_lockings_free_bitmap >> idx) & 1)){
-			idx++;
-		}
+        // TODO!!
+        // Make this respect any incoming alignment
+        // as this currently assumes that the greedy allocation matches the alignment
 
-		if(idx >= 64){
-			vmm_printf("%s: Unable to find free TLB locking entry (bitmap = 0x%lx)\n",
-				__func__, tlb_lockings_free_bitmap);
-			goto tlb_lock_free_fail;
-		}
+        // Figure out how many mappings we need
+        size_left = region->phys_size;
 
-		tlb_lockings_free_bitmap &= ~idx;
+        // Figure out how many giga pages we need
+        if(size_left >= (1 << 30)){
+            num_1g = size_left >> 30;
+            size_left -= num_1g << 30;
+        }
 
-		vmm_printf("%s: Mapping 0x%lx bytes, 0x%lx -> 0x%lx in locking entry %lu for %s %s\n",
-				__func__, region->phys_size, region->gphys_addr, region->maps[0].hphys_addr,
-				idx, (target & 1) ? "DTLB" : "", (target & 2) ? "and ITLB" : "");
+        // Figure out how many 2 mega pages we need
+        if(size_left >= (1 << 21)){
+            num_2m = size_left >> 21;
+            size_left -= num_2m << 21;
+        }
 
-		// Zero the page description struct
-		memset(&pg, 0, sizeof(pg));
+        // Figure out how many pages we need
+        if(size_left >= (1 << 12)){
+            num_4k = size_left >> 12;
+            size_left -= num_4k << 12;
+        }
 
-		// Set-up the page description struct
-		pg.ia = region->gphys_addr;
-		pg.sz = region->phys_size;
-		pg.oa = region->maps[0].hphys_addr;
+        if(size_left != 0){
+            vmm_printf("%s: The size of the region is not 4k aligned! (region->phys_size = 0x%lx)\n",
+                       __func__, region->phys_size);
+            goto tlb_lock_free_fail;
+        }
 
-		arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, region->flags);
+        // How many locked entries do we need in total?
+        num_needed_indices = num_1g + num_2m + num_4k;
 
-		// Try to map the page in Stage2
-		rc = mmu_map_page(riscv_guest_priv(guest)->pgtbl, &pg);
-		if (rc) {
-			vmm_printf("%s: Unable to map the page in the guest pagetable (rc = %d)!\n",
-				__func__, rc);
-			goto tlb_lock_free_fail;
-		}
+        // If that number already outgrows the maximum possible, we abort here
+        if(num_needed_indices > CONFIG_TLB_NUM_LOCKED_ENTRIES){
+            vmm_printf("%s: Impossible configuration. Locking this mapping would require %lu locked entries"
+                       " but hardware only supports %lu at max!\n", __func__, num_needed_indices, (u64) CONFIG_TLB_NUM_LOCKED_ENTRIES);
+            goto tlb_lock_free_fail;
+        }
 
-		lock_vpn.size = size_enum;
-		lock_vpn.virt_mode = 1;
-		lock_vpn.data = target & 1;
-		lock_vpn.instr = (target & 2) >> 1;
-		lock_vpn.s_st_enbl = 0;	// TODO! This works only for a bare-metal guest
-		lock_vpn.g_st_enbl = 1;
-		lock_vpn.vpn = region->gphys_addr >> 12;
 
-		lock_id.asid = 0;
-		lock_id.vmid = mmu_pgtbl_hw_tag(riscv_guest_priv(guest)->pgtbl);
+        while(num_reserved_indices < num_needed_indices){
 
-		rc = mmu_find_pte(riscv_guest_priv(guest)->pgtbl, region->gphys_addr, &lock_pte, &lock_pte_pgtbl);
-		if(rc){
-			vmm_printf("%s: Unable to find PTE for 0x%lx (rc = %d)\n",
-				__func__, region->gphys_addr, rc);
-			goto tlb_lock_free_fail;
-		}
+            while(idx < CONFIG_TLB_NUM_LOCKED_ENTRIES && !((tlb_lockings_free_bitmap >> idx) & 1)){
+                idx++;
+            }
 
-		u64 satp = 0, hgatp = 0;
+            if(idx >= CONFIG_TLB_NUM_LOCKED_ENTRIES){
+                vmm_printf("%s: Not enough lockable entries left (bitmap = 0x%lx)!\n", __func__, tlb_lockings_free_bitmap);
+                goto tlb_lock_free_fail;
+            }
 
-		asm volatile(
-			"csrrs %0, satp, x0\n		\
-			 csrrs %1, hgatp, x0\n"
-			 : "=r"(satp), "=r"(hgatp)
-			 ::
-		);
+            selected_indices |= 1 << idx++;
+            num_reserved_indices++;
+        }
 
-		vmm_printf("%s: Current SATP = 0x%lx, current HGATP = 0x%lx\n%s: assembled lock vpn = 0x%lx, assembled lock id = 0x%x\n",
-					__func__, satp, hgatp, __func__, arch_mmu_pack_tlb_lock_vpn(lock_vpn), arch_mmu_pack_tlb_lock_id(lock_id));
-		vmm_printf("%s: PTE for locked page = 0x%lx\n", __func__, *lock_pte);
+		tlb_lockings_free_bitmap &= ~selected_indices;
 
-		// set the registers for our locking
+		vmm_printf("%s: Mapping 0x%lx bytes, 0x%lx -> 0x%lx with locking bitmap 0x%lx in %lu lockable entries for %s%s%s\n",
+				   __func__, region->phys_size, region->gphys_addr, region->maps[0].hphys_addr,
+				   selected_indices, num_reserved_indices,
+                   (target & 1) ? "DTLB" : "", (target == 3) ? " and " : "", (target & 2) ? "ITLB" : "");
 
-		switch(idx){
+		// The saved lock_id is the bitmap of the used entries
+		region->lock_id = selected_indices;
+
+        idx = 0;
+        while(!(selected_indices & 1)){
+            idx++;
+            selected_indices >>= 1;
+        }
+
+        // Use this to track how much is left to map
+        size_left = region->phys_size;
+        cur_gphys_addr = region->gphys_addr;
+        cur_hphys_addr = region->maps[0].hphys_addr;
+
+        while(num_reserved_indices){
+            // Zero the page description struct
+            memset(&pg, 0, sizeof(pg));
+
+            // TODO!!
+            // Again the same assumption about alignment is used!
+            // This might break fairly easily
+
+            if(num_1g){
+                cur_size = 1 << 30;
+                cur_size_enum = 3;
+                num_1g--;
+            } else if (num_2m) {
+                cur_size = 1 << 21;
+                cur_size_enum = 2;
+                num_2m--;
+            } else {
+                cur_size = 1 << 12;
+                cur_size_enum = 1;
+            }
+
+            // Set-up the page description struct
+            pg.ia = cur_gphys_addr;
+            pg.sz = cur_size;
+            pg.oa = cur_hphys_addr;
+
+            arch_mmu_pgflags_set(&pg.flags, MMU_STAGE2, region->flags);
+
+            // Try to map the page in Stage2
+            rc = mmu_map_page(riscv_guest_priv(guest)->pgtbl, &pg);
+            if (rc) {
+                vmm_printf("%s: Unable to map the page in the guest pagetable (rc = %d)!\n",
+                           __func__, rc);
+                goto tlb_lock_free_fail;
+            }
+
+            lock_vpn.size = cur_size_enum;
+            lock_vpn.virt_mode = 1;
+            lock_vpn.data = target & 1;
+            lock_vpn.instr = (target & 2) >> 1;
+            lock_vpn.s_st_enbl = 0;	// TODO! This works only for a bare-metal guest
+            lock_vpn.g_st_enbl = 1;
+            lock_vpn.vpn = cur_gphys_addr >> 12;
+
+            lock_id.asid = 0;
+            lock_id.vmid = mmu_pgtbl_hw_tag(riscv_guest_priv(guest)->pgtbl);
+
+            rc = mmu_find_pte(riscv_guest_priv(guest)->pgtbl, cur_gphys_addr, &lock_pte, &lock_pte_pgtbl);
+            if(rc){
+                vmm_printf("%s: Unable to find PTE for 0x%lx (rc = %d)\n",
+                           __func__, region->gphys_addr, rc);
+                goto tlb_lock_free_fail;
+            }
+
+            u64 satp = 0, hgatp = 0;
+
+            asm volatile(
+                "csrrs %0, satp, x0\n		\
+                 csrrs %1, hgatp, x0\n"
+                : "=r"(satp), "=r"(hgatp)
+                ::
+            );
+
+            vmm_printf("%s: Current SATP = 0x%lx, current HGATP = 0x%lx\n%s: assembled lock vpn = 0x%lx, assembled lock id = 0x%x\n",
+                       __func__, satp, hgatp, __func__, arch_mmu_pack_tlb_lock_vpn(lock_vpn), arch_mmu_pack_tlb_lock_id(lock_id));
+            vmm_printf("%s: PTE for locked page = 0x%lx\n", __func__, *lock_pte);
+
+
+            // set the registers for our locking
+            switch(idx){
 			case 0:
-				asm volatile(
-					"csrrw x0, 0x5C3, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5C3, %0\n	\
 					 csrrw x0, 0x5C4, %1\n	\
 					 csrrw x0, 0x5C5, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 1:
-				asm volatile(
-					"csrrw x0, 0x5C6, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5C6, %0\n	\
 					 csrrw x0, 0x5C7, %1\n	\
 					 csrrw x0, 0x5C8, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 2:
-				asm volatile(
-					"csrrw x0, 0x5C9, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5C9, %0\n	\
 					 csrrw x0, 0x5CA, %1\n	\
 					 csrrw x0, 0x5CB, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 3:
-				asm volatile(
-					"csrrw x0, 0x5CC, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5CC, %0\n	\
 					 csrrw x0, 0x5CD, %1\n	\
 					 csrrw x0, 0x5CE, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 4:
-				asm volatile(
-					"csrrw x0, 0x5CF, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5CF, %0\n	\
 					 csrrw x0, 0x5D0, %1\n	\
 					 csrrw x0, 0x5D1, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 5:
-				asm volatile(
-					"csrrw x0, 0x5D2, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5D2, %0\n	\
 					 csrrw x0, 0x5D3, %1\n	\
 					 csrrw x0, 0x5D4, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 6:
-				asm volatile(
-					"csrrw x0, 0x5D5, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5D5, %0\n	\
 					 csrrw x0, 0x5D6, %1\n	\
 					 csrrw x0, 0x5D7, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			case 7:
-				asm volatile(
-					"csrrw x0, 0x5D8, %0\n	\
+                asm volatile(
+                    "csrrw x0, 0x5D8, %0\n	\
 					 csrrw x0, 0x5D9, %1\n	\
 					 csrrw x0, 0x5DA, %2\n"
-					:: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
-					:
-				);
-				break;
+                    :: "r"(*lock_pte), "r"(arch_mmu_pack_tlb_lock_vpn(lock_vpn)), "r"(arch_mmu_pack_tlb_lock_id(lock_id))
+                    :
+                );
+                break;
 			default:
-				vmm_printf("%s: Index %lu not supported!\n", __func__, idx);
-				break;
-		}
+                vmm_printf("%s: Index %lu not supported!\n", __func__, idx);
+                break;
+            }
 
-		// The saved lock_id is always the lock index + 1, so lock_id == 0 means no locking
-		region->lock_id = idx + 1;
+            cur_gphys_addr += cur_size;
+            cur_hphys_addr += cur_size;
+
+            selected_indices >>= 1;
+            idx++;
+            num_reserved_indices--;
+
+            // Select the next index to use
+            if(num_reserved_indices){
+                while(!(selected_indices & 1)){
+                    idx++;
+                    selected_indices >>= 1;
+                }
+            }
+        }
 	}
 
 tlb_lock_free_fail:

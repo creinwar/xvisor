@@ -5,7 +5,7 @@
 	model = "virt64";
 	device_type = "guest";
 	sbi_version = <2>;
-    allowed_colours = <0xFFFE>;
+    allowed_colours = <0xFF00>;
 
 	aliases {
 		mem0 = &MEM0;
@@ -94,12 +94,21 @@
 			tlb_locking = "both";
 		};
 
-		MEM1: mem1 {
+		dspm {
 			manifest_type = "real";
 			address_type = "memory";
 			guest_physical_addr = <0x61000000>;
-			host_physical_addr = <0xFFFFFFFFFFF00000>;
-			physical_size = <0x00004000>;
+			host_physical_addr = <0x01800000>;
+			physical_size = <0x4000>;
+			device_type = "ram";
+		};
+
+		ispm {
+			manifest_type = "real";
+			address_type = "memory";
+			guest_physical_addr = <0x62000000>;
+			host_physical_addr = <0x01A00000>;
+			physical_size = <0x2000>;
 			device_type = "ram";
 		};
 	};
