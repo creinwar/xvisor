@@ -181,7 +181,7 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 	arch_pte_t *lock_pte = NULL;
 	struct mmu_pgtbl *lock_pte_pgtbl = NULL;
 	u64 size_left = 0, num_1g = 0, num_2m = 0, num_4k = 0, num_needed_indices = 0, num_reserved_indices = 0;
-    u64 idx = 0, selected_indices = 0;
+    u64 idx = 0, selected_indices = 0, mut_align = 0, mut_align_bits = 0;
     u64 cur_gphys_addr = 0, cur_hphys_addr = 0, cur_size = 0;
 	int rc = 0, target = 0, cur_size_enum = 0;
 	irq_flags_t f;
@@ -213,28 +213,35 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
 		}
 
 		// To be able to create a TLB locking we need the region to only consist of
-        // a single mapping (so that we don't inconsistent page table state)
+        // a single mapping (so that we don't have inconsistent page table state)
 		if(region->maps_count > 1){
 			vmm_printf("%s: Lock-incompatible region (@0x%lx, 0x%lx)\n",
 				__func__, region->gphys_addr, region->phys_size);
 			goto tlb_lock_free_fail;
 		}
 
-        // TODO!!
-        // Make this respect any incoming alignment
-        // as this currently assumes that the greedy allocation matches the alignment
+        mut_align_bits = (u64) region->gphys_addr | (u64) region->maps[0].hphys_addr;
+
+        // Check how the mutual alignment works out to select the largest mappings possible
+        if(!(mut_align_bits & ((1 << 30) - 1))){
+            mut_align = 3;
+        } else if (!(mut_align_bits & ((1 << 21) - 1))) {
+            mut_align = 2;
+        } else {
+            mut_align = 1;
+        }
 
         // Figure out how many mappings we need
         size_left = region->phys_size;
 
         // Figure out how many giga pages we need
-        if(size_left >= (1 << 30)){
+        if(mut_align >= 3 && size_left >= (1 << 30)){
             num_1g = size_left >> 30;
             size_left -= num_1g << 30;
         }
 
         // Figure out how many 2 mega pages we need
-        if(size_left >= (1 << 21)){
+        if(mut_align >= 2 && size_left >= (1 << 21)){
             num_2m = size_left >> 21;
             size_left -= num_2m << 21;
         }
@@ -301,10 +308,6 @@ int arch_guest_add_region(struct vmm_guest *guest, struct vmm_region *region)
         while(num_reserved_indices){
             // Zero the page description struct
             memset(&pg, 0, sizeof(pg));
-
-            // TODO!!
-            // Again the same assumption about alignment is used!
-            // This might break fairly easily
 
             if(num_1g){
                 cur_size = 1 << 30;
@@ -474,85 +477,96 @@ int arch_guest_del_region(struct vmm_guest *guest, struct vmm_region *region)
 {
 #ifdef CONFIG_TLB_LOCKING
 	irq_flags_t f;
+    u64 remaining_entries = 0, cur_idx = 0;
 
 	arch_cpu_irq_save(f);
 
 	// Does this region have a locking?
 	if(region->lock_id){
-		switch(region->lock_id - 1){
-			case 0:
-				asm volatile(
-					"csrrw x0, 0x5C3, x0\n	\
-					 csrrw x0, 0x5C4, x0\n	\
-					 csrrw x0, 0x5C5, x0\n"
-					 :::
-				);
-				break;
-			case 1:
-				asm volatile(
-					"csrrw x0, 0x5C6, x0\n	\
-					 csrrw x0, 0x5C7, x0\n	\
-					 csrrw x0, 0x5C8, x0\n"
-					 :::
-				);
-				break;
-			case 2:
-				asm volatile(
-					"csrrw x0, 0x5C9, x0\n	\
-					 csrrw x0, 0x5CA, x0\n	\
-					 csrrw x0, 0x5CB, x0\n"
-					 :::
-				);
-				break;
-			case 3:
-				asm volatile(
-					"csrrw x0, 0x5CC, x0\n	\
-					 csrrw x0, 0x5CD, x0\n	\
-					 csrrw x0, 0x5CE, x0\n"
-					 :::
-				);
-				break;
-			case 4:
-				asm volatile(
-					"csrrw x0, 0x5CF, x0\n	\
-					 csrrw x0, 0x5D0, x0\n	\
-					 csrrw x0, 0x5D1, x0\n"
-					 :::
-				);
-				break;
-			case 5:
-				asm volatile(
-					"csrrw x0, 0x5D2, x0\n	\
-					 csrrw x0, 0x5D3, x0\n	\
-					 csrrw x0, 0x5D4, x0\n"
-					 :::
-				);
-				break;
-			case 6:
-				asm volatile(
-					"csrrw x0, 0x5D5, x0\n	\
-					 csrrw x0, 0x5D6, x0\n	\
-					 csrrw x0, 0x5D7, x0\n"
-					 :::
-				);
-				break;
-			case 7:
-				asm volatile(
-					"csrrw x0, 0x5D8, x0\n	\
-					 csrrw x0, 0x5D9, x0\n	\
-					 csrrw x0, 0x5DA, x0\n"
-					 :::
-				);
-				break;
-			default:
-				vmm_printf("%s: Unsupported locking index: %lu\n", __func__, region->lock_id-1);
-				break;
-		}
+        remaining_entries = region->lock_id;
 
-		// If the lock id is in the supported range, add it to the free bitmap again
-		if(region->lock_id <= 8){
-			tlb_lockings_free_bitmap |= (1 << (region->lock_id - 1));
-		}
+        while(remaining_entries){
+
+            while(!(remaining_entries & 1)){
+                cur_idx++;
+                remaining_entries >>= 1;
+            }
+
+		    switch(cur_idx){
+			    case 0:
+				    asm volatile(
+					    "csrrw x0, 0x5C3, x0\n	\
+					     csrrw x0, 0x5C4, x0\n	\
+					     csrrw x0, 0x5C5, x0\n"
+					     :::
+				    );
+				    break;
+			    case 1:
+				    asm volatile(
+					    "csrrw x0, 0x5C6, x0\n	\
+					     csrrw x0, 0x5C7, x0\n	\
+					     csrrw x0, 0x5C8, x0\n"
+					     :::
+				    );
+				    break;
+			    case 2:
+				    asm volatile(
+					    "csrrw x0, 0x5C9, x0\n	\
+					     csrrw x0, 0x5CA, x0\n	\
+					     csrrw x0, 0x5CB, x0\n"
+					     :::
+				    );
+                    break;
+			    case 3:
+				    asm volatile(
+					    "csrrw x0, 0x5CC, x0\n	\
+					     csrrw x0, 0x5CD, x0\n	\
+					     csrrw x0, 0x5CE, x0\n"
+					     :::
+				    );
+				    break;
+			    case 4:
+                    asm volatile(
+                        "csrrw x0, 0x5CF, x0\n	\
+					     csrrw x0, 0x5D0, x0\n	\
+					     csrrw x0, 0x5D1, x0\n"
+					     :::
+				    );
+				    break;
+			    case 5:
+				    asm volatile(
+					    "csrrw x0, 0x5D2, x0\n	\
+					     csrrw x0, 0x5D3, x0\n	\
+					     csrrw x0, 0x5D4, x0\n"
+					     :::
+				    );
+				    break;
+			    case 6:
+				    asm volatile(
+					    "csrrw x0, 0x5D5, x0\n	\
+					     csrrw x0, 0x5D6, x0\n	\
+					     csrrw x0, 0x5D7, x0\n"
+					     :::
+				    );
+				    break;
+			    case 7:
+				    asm volatile(
+					    "csrrw x0, 0x5D8, x0\n	\
+					     csrrw x0, 0x5D9, x0\n	\
+					     csrrw x0, 0x5DA, x0\n"
+					     :::
+				    );
+				    break;
+			    default:
+				    vmm_printf("%s: Unsupported locking index: %lu\n", __func__, region->lock_id-1);
+				    break;
+		    }
+
+            tlb_lockings_free_bitmap |= (1 << cur_idx);
+
+            cur_idx++;
+            remaining_entries >>= 1;
+        }
 
 		region->lock_id = 0;
 	}
