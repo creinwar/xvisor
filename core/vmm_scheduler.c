@@ -301,10 +301,11 @@ static void vmm_scheduler_switch(struct vmm_scheduler_ctrl *schedp,
 		arch_vcpu_post_switch(next, regs);
 	}
 
-	if ((next && next->id == 9) || (current && current->id == 9)){
-		// RTOS vcpu id hardcoded
+	if ((next && next->id == 8) || (current && current->id == 8)){
+		// Benchmark vcpu id hardcoded (the first vcpu after the
+                // automatically created ones)
 		// Sort of handshaking
-		// if the RTOS waits for a timeslice (bit 1 is set)
+		// if the benchmark waits for a timeslice (bit 1 is set)
 		// signal, that we switch to it now (bit 0 gets set)
 		__asm volatile(
 			"csrrs t0, 0x5DB, x0\n		\
