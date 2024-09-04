@@ -140,10 +140,18 @@ static void __timer_schedule_next_event(struct vmm_timer_local_ctrl *tlcp)
 		vmm_clockchip_program_event(tlcp->cc,
 				    tstamp, e->expiry_tstamp);
 
-		// Benchmarking - If we have less than 40ms time
+		// Benchmarking - If we have less than 30ms time
 		// we have to clear the signal to the benchmark that
 		// indicates, that it was scheduled again
-		if((e->expiry_tstamp - tstamp) <= 40000000){
+
+                // 1'500'000 cycles @ 50 MHz
+		//if((e->expiry_tstamp - tstamp) <= 30000000){
+
+                // 1'000'000 cycles @ 50 MHz
+                if((e->expiry_tstamp - tstamp) <= 20000000){
+
+                //    10'000 cycles @ 50 MHz
+		//if((e->expiry_tstamp - tstamp) <= 200000){
 			__asm volatile(
 				"csrrci x0, 0x5DB, 1\n"
 				:::
