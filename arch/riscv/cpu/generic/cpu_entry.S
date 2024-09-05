@@ -342,6 +342,10 @@ _cpu_init:
 	ret
 
 .macro SAVE_ALL
+        // Save the current counter value on hypervisor entry
+        // Whether this value will be used can be decided later on
+        csrrw x0, 0x5DD, x0
+
 #ifdef CONFIG_TLB_COLOURING
 	// Overwrite the current colour with the colour reserved
 	// for Xvisor
@@ -481,6 +485,11 @@ _cpu_init:
 	// to the current colour register
 	csrrwi x0, 0x5C2, 1
 #endif
+
+        // Save the current counter value on hypervisor exit
+        // Whether this value will be used is decided in the exception
+        // handler
+        csrrw x0, 0x5DC, x0
 .endm
 
 	/* Exception handling */
